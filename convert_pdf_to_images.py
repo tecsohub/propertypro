@@ -1,74 +1,71 @@
-#!/usr/bin/env python
-"""Convert a PDF to per-page PNG and WebP images using PyMuPDF and Pillow.
+from __future__ import annotations
 
-Usage:
-  python convert_pdf_to_images.py input.pdf [--dpi 300] [--outprefix out]
-"""
 import argparse
-import os
-import sys
+from pathlib import Path
 
-try:
-    import fitz
-except Exception:
-    print("PyMuPDF (fitz) is required: pip install pymupdf", file=sys.stderr)
-    raise
-
-try:
-    from PIL import Image
-except Exception:
-    print("Pillow is required: pip install pillow", file=sys.stderr)
-    raise
+import fitz
+from PIL import Image
 
 
-def main():
-    p = argparse.ArgumentParser()
-    p.add_argument("pdf", help="Input PDF file")
-    p.add_argument("--dpi", type=int, default=3000, help="Rasterization DPI (default 300)")
-    p.add_argument("--outprefix", default=None, help="Output filename prefix (default: input basename)")
-    args = p.parse_args()
+def render_pdf_to_images(pdf_path: Path, dpi: int, output_dir: Path | None = None) -> list[Path]:
+    """Render each PDF page to PNG and WebP without changing the page content."""
+    if not pdf_path.exists():
+        raise FileNotFoundError(f"File not found: {pdf_path}")
 
-    pdf_path = args.pdf
-    if not os.path.exists(pdf_path):
-        print(f"Input PDF not found: {pdf_path}", file=sys.stderr)
-        sys.exit(2)
+    if dpi <= 0:
+        raise ValueError("DPI must be a positive integer.")
 
-    base = args.outprefix or os.path.splitext(os.path.basename(pdf_path))[0]
+    target_dir = output_dir or pdf_path.parent
+    target_dir.mkdir(parents=True, exist_ok=True)
 
-    doc = fitz.open(pdf_path)
-    zoom = args.dpi / 72.0
-    mat = fitz.Matrix(zoom, zoom)
-    out_files = []
+    written_files: list[Path] = []
+    scale = dpi / 72.0
 
-    for i, page in enumerate(doc, start=1):
-        pix = page.get_pixmap(matrix=mat, alpha=False)
-        png_path = f"{base}_page-{i}.png"
-        webp_path = f"{base}_page-{i}.webp"
-        pix.save(png_path)
+    with fitz.open(pdf_path) as document:
+        for page_index in range(document.page_count):
+            page = document.load_page(page_index)
+            pixmap = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
+            image = Image.frombytes("RGB", [pixmap.width, pixmap.height], pixmap.samples)
 
-        # Convert PNG -> WebP via Pillow to control quality
-        # Disable Pillow decompression bomb check for very large images (trusted local file)
-        try:
-            Image.MAX_IMAGE_PIXELS = None
-        except Exception:
-            pass
-        img = Image.open(png_path)
-        # WebP has a maximum dimension limit (16383). Downscale if necessary for WebP only.
-        max_dim = 16383
-        w, h = img.size
-        if max(w, h) > max_dim:
-            scale = max_dim / max(w, h)
-            new_size = (max(1, int(w * scale)), max(1, int(h * scale)))
-            img_resized = img.resize(new_size, Image.LANCZOS)
-            img_resized.save(webp_path, "WEBP", quality=90)
-        else:
-            img.save(webp_path, "WEBP", quality=90)
+            base_name = f"{pdf_path.stem}_page-{page_index + 1}"
+            png_path = target_dir / f"{base_name}.png"
+            webp_path = target_dir / f"{base_name}.webp"
 
-        out_files.append((png_path, webp_path))
-        print(f"Wrote: {png_path}")
-        print(f"Wrote: {webp_path}")
+            image.save(png_path, format="PNG")
+            image.save(webp_path, format="WEBP", quality=100, method=6)
 
-    print(f"Done. Generated {len(out_files)} page(s).")
+            written_files.extend([png_path, webp_path])
+
+    return written_files
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Convert a PDF into PNG and WebP images page by page without altering the content."
+    )
+    parser.add_argument("pdf_file", help="Path to the input PDF file.")
+    parser.add_argument(
+        "--dpi",
+        type=int,
+        default=1200,
+        help="Render resolution in DPI. Default: 1200.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        help="Optional directory for the generated images. Default: same folder as the PDF.",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    pdf_path = Path(args.pdf_file)
+    output_dir = Path(args.output_dir) if args.output_dir else None
+
+    written_files = render_pdf_to_images(pdf_path, args.dpi, output_dir=output_dir)
+    for file_path in written_files:
+        print(f"Created {file_path}")
 
 
 if __name__ == "__main__":
