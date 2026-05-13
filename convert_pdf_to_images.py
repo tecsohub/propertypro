@@ -4,11 +4,26 @@ import argparse
 from pathlib import Path
 
 import fitz
+import numpy as np
 from PIL import Image
 
 
+def _make_light_background_transparent(image: Image.Image, threshold: int = 254) -> Image.Image:
+    """Turn only pure white page pixels transparent while preserving all drawing content."""
+    rgba_image = image.convert("RGBA")
+    pixels = np.array(rgba_image)
+    # Only remove pixels very close to pure white (254-255 range) to keep all drawing content
+    white_pixels = (
+        (pixels[:, :, 0] >= threshold)
+        & (pixels[:, :, 1] >= threshold)
+        & (pixels[:, :, 2] >= threshold)
+    )
+    pixels[white_pixels, 3] = 0
+    return Image.fromarray(pixels, "RGBA")
+
+
 def render_pdf_to_images(pdf_path: Path, dpi: int, output_dir: Path | None = None) -> list[Path]:
-    """Render each PDF page to PNG and WebP without changing the page content."""
+    """Render each PDF page to PNG and WebP with a transparent background."""
     if not pdf_path.exists():
         raise FileNotFoundError(f"File not found: {pdf_path}")
 
@@ -24,8 +39,9 @@ def render_pdf_to_images(pdf_path: Path, dpi: int, output_dir: Path | None = Non
     with fitz.open(pdf_path) as document:
         for page_index in range(document.page_count):
             page = document.load_page(page_index)
-            pixmap = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
-            image = Image.frombytes("RGB", [pixmap.width, pixmap.height], pixmap.samples)
+            pixmap = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=True)
+            image = Image.frombytes("RGBA", [pixmap.width, pixmap.height], pixmap.samples)
+            image = _make_light_background_transparent(image)
 
             base_name = f"{pdf_path.stem}_page-{page_index + 1}"
             png_path = target_dir / f"{base_name}.png"
